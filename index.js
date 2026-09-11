@@ -125,6 +125,7 @@ async function handleCloseTicket(interaction) {
   await interaction.reply({ content: 'Saving transcript and closing ticket...' });
 
   try {
+    // 1. Generate HTML transcript
     const attachment = await discordTranscripts.createTranscript(interaction.channel, {
       limit: -1,
       filename: `${interaction.channel.name}-transcript.html`,
@@ -151,7 +152,7 @@ async function handleCloseTicket(interaction) {
       .setColor(CONFIG.COLOR)
       .setTimestamp();
 
-    // 1. Send Transcript to User DM
+    // 2. Send Transcript to Ticket Creator via DM
     if (ticketUser) {
       await ticketUser.send({
         content: `Here is the transcript for your closed ticket: **${interaction.channel.name}**`,
@@ -160,7 +161,7 @@ async function handleCloseTicket(interaction) {
       }).catch(err => console.log(`Could not DM user: ${err.message}`));
     }
 
-    // 2. Send Transcript to Log Channel
+    // 3. Send Transcript to Log Channel
     const logChannel = await interaction.guild.channels.fetch(CONFIG.TRANSCRIPT_CHANNEL).catch(() => null);
     if (logChannel) {
       await logChannel.send({
@@ -169,7 +170,7 @@ async function handleCloseTicket(interaction) {
       });
     }
 
-    // 3. Delete channel after 5 seconds
+    // 4. Delete the ticket channel where command was triggered (5 second buffer)
     setTimeout(() => {
       interaction.channel.delete().catch(console.error);
     }, 5000);
@@ -177,7 +178,7 @@ async function handleCloseTicket(interaction) {
   } catch (error) {
     console.error('Transcript Error:', error);
     await interaction.followUp({ 
-      content: 'An error occurred while generating transcript! Ensure the bot has Read Message History permissions.', 
+      content: 'An error occurred while generating transcript! Ensure Message Content Intent is enabled in the Developer Portal.', 
       ephemeral: true 
     });
   }
