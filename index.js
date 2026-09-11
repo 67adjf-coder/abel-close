@@ -106,14 +106,12 @@ async function createTicketChannel(guild, user, categoryId) {
   });
 }
 
-// Handler for closing tickets with strict Admin permission checks
+// --- Handler for Closing Tickets (Admins Only) ---
 async function handleCloseTicket(interaction) {
-  // Check if execution is inside a ticket channel
   if (!interaction.channel.name.startsWith('ticket-')) {
     return interaction.reply({ content: 'This action can only be used inside a ticket channel!', ephemeral: true });
   }
 
-  // Permission Check: Requires Administrator permission OR designated ADMIN_ROLE
   const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator) ||
                   interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE);
 
@@ -127,10 +125,10 @@ async function handleCloseTicket(interaction) {
   await interaction.reply({ content: 'Saving transcript and closing ticket...' });
 
   try {
-    const transcriptFile = await discordTranscripts.createTranscript(interaction.channel, {
+    const attachment = await discordTranscripts.createTranscript(interaction.channel, {
       limit: -1,
       filename: `${interaction.channel.name}-transcript.html`,
-      saveImages: false,
+      saveImages: true,
       poweredBy: false
     });
 
@@ -153,36 +151,35 @@ async function handleCloseTicket(interaction) {
       .setColor(CONFIG.COLOR)
       .setTimestamp();
 
-    // 1. DM User Transcript
+    // 1. Send Transcript to User DM
     if (ticketUser) {
-      try {
-        await ticketUser.send({
-          content: `Here is the transcript for your closed ticket: **${interaction.channel.name}**`,
-          embeds: [logEmbed],
-          files: [transcriptFile]
-        });
-      } catch (err) {
-        console.log(`Could not send DM to user ${ticketUser.user.tag}: ${err.message}`);
-      }
+      await ticketUser.send({
+        content: `Here is the transcript for your closed ticket: **${interaction.channel.name}**`,
+        embeds: [logEmbed],
+        files: [attachment]
+      }).catch(err => console.log(`Could not DM user: ${err.message}`));
     }
 
-    // 2. Post Transcript in Log Channel
+    // 2. Send Transcript to Log Channel
     const logChannel = await interaction.guild.channels.fetch(CONFIG.TRANSCRIPT_CHANNEL).catch(() => null);
     if (logChannel) {
       await logChannel.send({
         embeds: [logEmbed],
-        files: [transcriptFile]
+        files: [attachment]
       });
     }
 
-    // 3. Delete ticket channel after 5s
+    // 3. Delete channel after 5 seconds
     setTimeout(() => {
       interaction.channel.delete().catch(console.error);
     }, 5000);
 
   } catch (error) {
-    console.error('Error closing ticket:', error);
-    await interaction.followUp({ content: 'An error occurred while generating transcript!', ephemeral: true });
+    console.error('Transcript Error:', error);
+    await interaction.followUp({ 
+      content: 'An error occurred while generating transcript! Ensure the bot has Read Message History permissions.', 
+      ephemeral: true 
+    });
   }
 }
 
