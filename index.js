@@ -62,7 +62,7 @@ client.once('ready', async () => {
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('close')
-      .setDescription('Close the ticket, save transcript, and delete channel')
+      .setDescription('Close the ticket (Admins only)')
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -106,10 +106,88 @@ async function createTicketChannel(guild, user, categoryId) {
   });
 }
 
+// Handler for closing tickets with strict Admin permission checks
+async function handleCloseTicket(interaction) {
+  // Check if execution is inside a ticket channel
+  if (!interaction.channel.name.startsWith('ticket-')) {
+    return interaction.reply({ content: 'This action can only be used inside a ticket channel!', ephemeral: true });
+  }
+
+  // Permission Check: Requires Administrator permission OR designated ADMIN_ROLE
+  const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator) ||
+                  interaction.member.roles.cache.has(CONFIG.ADMIN_ROLE);
+
+  if (!isAdmin) {
+    return interaction.reply({ 
+      content: 'Only admins can close tickets!', 
+      ephemeral: true 
+    });
+  }
+
+  await interaction.reply({ content: 'Saving transcript and closing ticket...' });
+
+  try {
+    const transcriptFile = await discordTranscripts.createTranscript(interaction.channel, {
+      limit: -1,
+      filename: `${interaction.channel.name}-transcript.html`,
+      saveImages: false,
+      poweredBy: false
+    });
+
+    const ticketUserOverwrite = interaction.channel.permissionOverwrites.cache.find(
+      overwrite => overwrite.type === 1 && overwrite.id !== interaction.client.user.id && overwrite.id !== CONFIG.ADMIN_ROLE
+    );
+
+    let ticketUser = null;
+    if (ticketUserOverwrite) {
+      ticketUser = await interaction.guild.members.fetch(ticketUserOverwrite.id).catch(() => null);
+    }
+
+    const logEmbed = new EmbedBuilder()
+      .setTitle('Ticket Closed')
+      .addFields(
+        { name: 'Ticket Channel', value: `${interaction.channel.name}`, inline: true },
+        { name: 'Closed By', value: `${interaction.user.tag}`, inline: true },
+        { name: 'Ticket Creator', value: ticketUser ? `<@${ticketUser.id}>` : 'Unknown User', inline: true }
+      )
+      .setColor(CONFIG.COLOR)
+      .setTimestamp();
+
+    // 1. DM User Transcript
+    if (ticketUser) {
+      try {
+        await ticketUser.send({
+          content: `Here is the transcript for your closed ticket: **${interaction.channel.name}**`,
+          embeds: [logEmbed],
+          files: [transcriptFile]
+        });
+      } catch (err) {
+        console.log(`Could not send DM to user ${ticketUser.user.tag}: ${err.message}`);
+      }
+    }
+
+    // 2. Post Transcript in Log Channel
+    const logChannel = await interaction.guild.channels.fetch(CONFIG.TRANSCRIPT_CHANNEL).catch(() => null);
+    if (logChannel) {
+      await logChannel.send({
+        embeds: [logEmbed],
+        files: [transcriptFile]
+      });
+    }
+
+    // 3. Delete ticket channel after 5s
+    setTimeout(() => {
+      interaction.channel.delete().catch(console.error);
+    }, 5000);
+
+  } catch (error) {
+    console.error('Error closing ticket:', error);
+    await interaction.followUp({ content: 'An error occurred while generating transcript!', ephemeral: true });
+  }
+}
+
 client.on('interactionCreate', async interaction => {
-  // ----------------------------------------------------
   // 1. /ticket-setup Command
-  // ----------------------------------------------------
   if (interaction.isChatInputCommand() && interaction.commandName === 'ticket-setup') {
     const embed = new EmbedBuilder()
       .setTitle('Ticket Support')
@@ -131,81 +209,17 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ----------------------------------------------------
   // 2. /close Command
-  // ----------------------------------------------------
   if (interaction.isChatInputCommand() && interaction.commandName === 'close') {
-    if (!interaction.channel.name.startsWith('ticket-')) {
-      return interaction.reply({ content: 'This command can only be used inside a ticket channel!', ephemeral: true });
-    }
-
-    await interaction.reply({ content: 'Saving transcript and closing ticket...' });
-
-    try {
-      // Create transcript HTML file
-      const transcriptFile = await discordTranscripts.createTranscript(interaction.channel, {
-        limit: -1,
-        filename: `${interaction.channel.name}-transcript.html`,
-        saveImages: false,
-        poweredBy: false
-      });
-
-      // Find user who created the ticket via channel permissions overwrite
-      const ticketUserOverwrite = interaction.channel.permissionOverwrites.cache.find(
-        overwrite => overwrite.type === 1 && overwrite.id !== interaction.client.user.id && overwrite.id !== CONFIG.ADMIN_ROLE
-      );
-
-      let ticketUser = null;
-      if (ticketUserOverwrite) {
-        ticketUser = await interaction.guild.members.fetch(ticketUserOverwrite.id).catch(() => null);
-      }
-
-      const logEmbed = new EmbedBuilder()
-        .setTitle('Ticket Closed')
-        .addFields(
-          { name: 'Ticket Channel', value: `${interaction.channel.name}`, inline: true },
-          { name: 'Closed By', value: `${interaction.user.tag}`, inline: true },
-          { name: 'Ticket Creator', value: ticketUser ? `<@${ticketUser.id}>` : 'Unknown User', inline: true }
-        )
-        .setColor(CONFIG.COLOR)
-        .setTimestamp();
-
-      // 1. Send Transcript to User DM
-      if (ticketUser) {
-        try {
-          await ticketUser.send({
-            content: `Here is the transcript for your closed ticket: **${interaction.channel.name}**`,
-            embeds: [logEmbed],
-            files: [transcriptFile]
-          });
-        } catch (err) {
-          console.log(`Could not send DM to user ${ticketUser.user.tag}: ${err.message}`);
-        }
-      }
-
-      // 2. Send Transcript to the Log Channel
-      const logChannel = await interaction.guild.channels.fetch(CONFIG.TRANSCRIPT_CHANNEL).catch(() => null);
-      if (logChannel) {
-        await logChannel.send({
-          embeds: [logEmbed],
-          files: [transcriptFile]
-        });
-      }
-
-      // 3. Delete channel after 5 seconds
-      setTimeout(() => {
-        interaction.channel.delete().catch(console.error);
-      }, 5000);
-
-    } catch (error) {
-      console.error('Error closing ticket:', error);
-      await interaction.followUp({ content: 'An error occurred while generating transcript!', ephemeral: true });
-    }
+    await handleCloseTicket(interaction);
   }
 
-  // ----------------------------------------------------
-  // 3. Select Menu Handling
-  // ----------------------------------------------------
+  // 3. Close Ticket Button
+  if (interaction.isButton() && interaction.customId === 'btn_close_ticket') {
+    await handleCloseTicket(interaction);
+  }
+
+  // 4. Select Menu Handling
   if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select') {
     const val = interaction.values[0];
     await interaction.reply({ 
@@ -219,6 +233,13 @@ client.on('interactionCreate', async interaction => {
 
     const channel = await createTicketChannel(interaction.guild, interaction.user, catId);
 
+    const closeButtonRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('btn_close_ticket')
+        .setLabel('Close Ticket')
+        .setStyle(ButtonStyle.Danger)
+    );
+
     if (val === 'option_partner') {
       const embed = new EmbedBuilder()
         .setDescription("_ _\n            tickette booth . . .\n> reαdy to be pαrtners with **gg.weeknd?**\n> click on the respective buttons to continue!\n_ _")
@@ -228,18 +249,16 @@ client.on('interactionCreate', async interaction => {
         new ButtonBuilder().setCustomId('btn_partner_reqs').setLabel('pαrtner').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('btn_network_reqs').setLabel('network').setStyle(ButtonStyle.Secondary)
       );
-      await channel.send({ embeds: [embed], components: [row] });
+      await channel.send({ embeds: [embed], components: [row, closeButtonRow] });
     } else {
       const embed = new EmbedBuilder()
         .setDescription("_ _\n     thαnk you for contαcting us !\n     kindly  wαit  for our stαffs  to\n     αssist  you  with  this  mαtter\n_ _\n> use .ping after 2 hrs w no response")
         .setColor(CONFIG.COLOR);
-      await channel.send({ embeds: [embed] });
+      await channel.send({ embeds: [embed], components: [closeButtonRow] });
     }
   }
 
-  // ----------------------------------------------------
-  // 4. Button Interactions
-  // ----------------------------------------------------
+  // 5. Button Interactions
   if (interaction.isButton()) {
     if (interaction.customId === 'btn_partner_reqs') {
       const embed = new EmbedBuilder()
@@ -287,15 +306,15 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ----------------------------------------------------
-  // 5. Modal Submissions
-  // ----------------------------------------------------
+  // 6. Modal Submissions
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'form_partner') {
       await interaction.deferReply({ ephemeral: true });
 
       try {
         const adText = interaction.fields.getTextInputValue('ad');
+        const rep2Input = interaction.fields.getTextInputValue('rep2') || '';
+
         if (adText.includes('@everyone') || adText.includes('@here')) {
           return await interaction.editReply({ 
             content: 'Invalid server ad! Hidden or explicit `@everyone` / `@here` pings are not allowed.' 
@@ -307,7 +326,14 @@ client.on('interactionCreate', async interaction => {
           return await interaction.editReply({ content: 'Error: Partner ad channel not found.' });
         }
 
-        await adChannel.send(adText);
+        let rep2Formatted = '';
+        if (rep2Input.trim() && rep2Input.trim().toLowerCase() !== 'n/a') {
+          rep2Formatted = rep2Input.startsWith('<@') ? ` ${rep2Input}` : ` ${rep2Input.trim()}`;
+        }
+
+        const formattedMessage = `_ _\n> rep : <@${interaction.user.id}>${rep2Formatted}\n_ _\n${adText}`;
+
+        await adChannel.send(formattedMessage);
 
         const member = await interaction.guild.members.fetch(interaction.user.id);
         await member.roles.add(CONFIG.PARTNER_ROLE);
